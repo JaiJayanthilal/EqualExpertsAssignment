@@ -28,7 +28,7 @@ public class SimplePriceService implements PriceProvider {
 
     @Override
     public BigDecimal getPrice(String product) throws Exception {
-        System.out.println("simple price provider");
+        System.out.println("simple price provider "+ product);
 
         if (!circuitBreaker.allowRequest()) {
             throw new RuntimeException("Circuit is OPEN / HALF_OPEN busy. Skipping API call");

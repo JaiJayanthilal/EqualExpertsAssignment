@@ -26,7 +26,7 @@ public class ResilientPriceService implements PriceProvider {
     }
 
     public BigDecimal getPrice(String product) {
-        System.out.println("resilient price provider");
+        System.out.println("resilient price provider "+ product);
 
         Supplier<BigDecimal> supplier = () -> fetchPrice(product);
 
