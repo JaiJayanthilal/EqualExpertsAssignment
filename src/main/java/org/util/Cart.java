@@ -35,9 +35,9 @@ public class Cart {
     }
 
     public void addProduct(String product, int quantity) throws Exception {
-        //BigDecimal price = getPrice(product);
-       // BigDecimal price = concurrentLRUCache.getOrLoad(product, priceService);
-        BigDecimal price = caffeineCache.getOrLoad(product, priceProvider);
+        //BigDecimal price = getPrice(product);  // this line calls LRU Cache
+       // BigDecimal price = concurrentLRUCache.getOrLoad(product, priceService); // this line calls concurrentLRUCache
+        BigDecimal price = caffeineCache.getOrLoad(product, priceProvider);  // this line calls caffeine Cache
 
         if (items.containsKey(product)) {
             items.get(product).addQuantity(quantity);
