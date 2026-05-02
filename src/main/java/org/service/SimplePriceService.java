@@ -60,7 +60,7 @@ public class SimplePriceService implements PriceProvider {
         throw new RuntimeException("Unexpected error");
     }
 
-    private BigDecimal fetchPrice(String product) throws Exception {
+    protected BigDecimal fetchPrice(String product) throws Exception {
 
         String urlStr = BASE_URL + product + ".json";
 

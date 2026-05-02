@@ -25,6 +25,7 @@ public class ResilientPriceService implements PriceProvider {
         this.retry = retry;
     }
 
+    @Override
     public BigDecimal getPrice(String product) {
         System.out.println("resilient price provider "+ product);
 
@@ -44,7 +45,7 @@ public class ResilientPriceService implements PriceProvider {
         }
     }
 
-    private BigDecimal fetchPrice(String product) {
+    protected BigDecimal fetchPrice(String product) {
         try {
             String urlStr = BASE_URL + product + ".json";
 
