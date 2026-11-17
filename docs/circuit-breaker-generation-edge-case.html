@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generation Number Edge Case</title>
+<style>
+  :root {
+    --bg: #fbfbf9;
+    --fg: #1f2328;
+    --muted: #5c636e;
+    --border: #d8dbe0;
+    --code-bg: #f1f2f4;
+    --head-bg: #eef0f3;
+    --accent: #b42318;
+    --ok: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --fg: #e6e8eb;
+      --muted: #9aa1ab;
+      --border: #343841;
+      --code-bg: #1f2228;
+      --head-bg: #23262d;
+      --accent: #f97066;
+      --ok: #4ac26b;
+    }
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 32px 16px 64px;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.2rem; margin: 36px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .question { color: var(--muted); margin: 0 0 24px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.95rem; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); }
+  td:first-child { white-space: nowrap; }
+  .wrong { color: var(--accent); font-weight: 600; }
+  li { margin: 6px 0; }
+  .status { border: 1px solid var(--border); border-left: 4px solid var(--ok); background: var(--head-bg); border-radius: 6px; padding: 10px 14px; margin: 0 0 24px; }
+  .file { color: var(--muted); font-size: 0.9rem; margin: 16px 0 -4px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Circuit breaker: the generation number edge case</h1>
+<p class="question">Question: <em>what is the generation number edge case?</em></p>
+
+<p class="status"><strong>Status: fixed.</strong> The generation-number fix and HTTP timeouts are implemented in <code>CircuitBreaker.java</code> and <code>SimplePriceService.java</code>, with tests for both cases below. The first half of this page describes the problem as it was <em>before</em> the fix. The other review fixes (client errors, missing prices, product-name checks, cart validation and rounding up) are near the end of the page.</p>
+
+<p>The edge case is <strong>stale results</strong>. A call gets permission while the breaker is in one state, but reports its success or failure after the breaker has moved to another state. The breaker can't tell old results from current ones, so a late result can override the decision the half-open trial is supposed to make.</p>
+
+<h2>Why it can happen</h2>
+
+<p>Before the fix, <code>recordSuccess()</code> and <code>recordFailure()</code> took no arguments. They always acted on the breaker's <strong>current</strong> state, however long ago the caller got permission:</p>
+
+<pre><code>public synchronized void recordSuccess() {
+    failureCount = 0;
+    state = State.CLOSED;              // closes the circuit no matter who reports it
+    halfOpenRequestInProgress = false;
+}</code></pre>
+
+<p>Under Option B, a call that got <code>ALLOWED</code> can take a while: up to 3 attempts plus 2 × 200 ms of sleep. <code>fetchPrice()</code> also had <strong>no HTTP timeouts</strong> (bug 5 in the review), so one hanging attempt could last minutes. Meanwhile, other threads can open the circuit and start a half-open trial.</p>
+
+<h2>Case 1: a stale success closes the circuit during the trial</h2>
+
+<p>Default settings <code>(3, 5000)</code>. Thread D is slow because its connection hangs.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td>t=0</td><td>Threads A, B, C, D all get <code>ALLOWED</code></td><td>CLOSED</td></tr>
+    <tr><td>t=1s</td><td>A, B, C each fail 3 attempts; the 3rd <code>recordFailure()</code> opens the circuit</td><td><strong>OPEN</strong></td></tr>
+    <tr><td>t=6.1s</td><td>Thread E gets <strong><code>TRIAL</code></strong> and starts its single call</td><td>HALF_OPEN</td></tr>
+    <tr><td>t=6.2s</td><td>Slow thread D finally succeeds and calls <code>recordSuccess()</code></td><td class="wrong">CLOSED ← wrong</td></tr>
+    <tr><td>t=6.2s+</td><td>New callers get <code>ALLOWED</code> and send traffic to a service that may still be down</td><td>CLOSED</td></tr>
+    <tr><td>t=6.5s</td><td>E's trial fails and calls <code>recordFailure()</code>; the state is CLOSED, so <code>failureCount</code> becomes 1 and the circuit stays CLOSED</td><td>CLOSED</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The trial was meant to decide whether the service had recovered. Instead, D's result from an attempt that started <strong>before the circuit opened</strong> closed the circuit, and the trial's failure was almost ignored.</p>
+
+<h2>Case 2: a stale failure re-opens the circuit and allows a second trial</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td>t=6.1s</td><td>E gets <code>TRIAL</code>, and its connection hangs (no timeout)</td><td>HALF_OPEN, flag = true</td></tr>
+    <tr><td>t=6.2s</td><td>Slow thread D fails and calls <code>recordFailure()</code>. HALF_OPEN goes to OPEN, <strong>the flag is reset to false</strong>, and <code>lastFailureTime</code> = 6.2s</td><td><strong>OPEN</strong></td></tr>
+    <tr><td>t=11.3s</td><td>Thread F arrives; the timeout has passed, so it also gets <strong><code>TRIAL</code></strong></td><td>HALF_OPEN</td></tr>
+    <tr><td></td><td class="wrong">E and F are now both trials in progress</td><td></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>That breaks the "only one trial call" rule. D's stale failure also restarted the 5-second countdown, as mentioned in the previous answer.</p>
+
+<h2>The fix (implemented): a generation number</h2>
+
+<p>The breaker has a counter that goes up on <strong>every state change</strong>. Each permission is a <code>Permit</code> carrying the generation it was granted in, and results from an older generation are ignored.</p>
+
+<p class="file"><code>src/main/java/org/designprinciple/CircuitBreaker.java</code></p>
+<pre><code>public static final class Permit {
+    private final Permission type;      // REJECTED, ALLOWED or TRIAL
+    private final long generation;      // breaker state the permit was granted in
+    ...
+    public Permission getType() { return type; }
+}
+
+// Incremented on every state change; permits from an older generation are stale
+private long generation = 0;
+
+public synchronized Permit acquirePermission() {
+    if (state == State.OPEN) {
+        if (System.currentTimeMillis() - openedAt &gt; retryTimeout) {
+            transitionTo(State.HALF_OPEN);
+        } else {
+            return permit(Permission.REJECTED);
+        }
+    }
+    if (state == State.HALF_OPEN) {
+        if (!halfOpenRequestInProgress) {
+            halfOpenRequestInProgress = true;
+            return permit(Permission.TRIAL);
+        } else {
+            return permit(Permission.REJECTED);
+        }
+    }
+    return permit(Permission.ALLOWED);
+}
+
+public synchronized void recordSuccess(Permit permit) {
+    if (isStale(permit)) {
+        return;
+    }
+    if (state == State.HALF_OPEN) {
+        transitionTo(State.CLOSED); // trial succeeded
+    } else {
+        // CLOSED: stay in the same generation so other in-flight calls still count
+        failureCount = 0;
+    }
+}
+
+public synchronized void recordFailure(Permit permit) {
+    if (isStale(permit)) {
+        return;
+    }
+    // Trial failed OR threshold reached → OPEN
+    if (state == State.HALF_OPEN || ++failureCount &gt;= failureThreshold) {
+        openedAt = System.currentTimeMillis();
+        transitionTo(State.OPEN);
+    }
+}
+
+// Results from a REJECTED permit or from an earlier state are ignored
+private boolean isStale(Permit permit) {
+    return permit.type == Permission.REJECTED || permit.generation != generation;
+}
+
+private void transitionTo(State newState) {
+    state = newState;
+    generation++;
+    failureCount = 0;
+    halfOpenRequestInProgress = false;
+}</code></pre>
+
+<p><code>SimplePriceService</code> keeps the <code>Permit</code> it receives and passes it back when it records the result:</p>
+
+<p class="file"><code>src/main/java/org/service/SimplePriceService.java</code></p>
+<pre><code>CircuitBreaker.Permit permit = circuitBreaker.acquirePermission();
+
+if (permit.getType() == CircuitBreaker.Permission.REJECTED) {
+    throw new RuntimeException("Circuit is OPEN / HALF_OPEN busy. Skipping API call");
+}
+
+int maxAttempts = permit.getType() == CircuitBreaker.Permission.TRIAL ? 1 : MAX_RETRIES;
+...
+circuitBreaker.recordSuccess(permit);   // on success
+...
+circuitBreaker.recordFailure(permit);   // after all attempts fail</code></pre>
+
+<h3>Design decisions worth remembering</h3>
+<ul>
+  <li><strong>A success while CLOSED does not bump the generation.</strong> It only resets <code>failureCount</code>. If it bumped the generation, every other call in flight at the same time would become stale and its failures would be lost.</li>
+  <li><strong>The OPEN timeout counts from when the circuit opened</strong> (<code>openedAt</code>), not from the last failure. Previously <code>lastFailureTime</code> was updated by every failure, so late failures kept restarting the 5-second countdown.</li>
+  <li><strong>Results from <code>REJECTED</code> permits are ignored</strong>, so a caller that was refused can't change the breaker's state.</li>
+  <li><strong>The no-argument <code>recordSuccess()</code> / <code>recordFailure()</code> were removed.</strong> Keeping them would leave the old loophole open.</li>
+  <li><strong><code>allowRequest()</code> was removed.</strong> It called <code>acquirePermission()</code> and threw the permit away. In HALF_OPEN that claimed the trial with no way to report a result, leaving the breaker stuck in HALF_OPEN for good. Each request now gets exactly one <code>Permit</code>, shared by all its retry attempts, and records exactly one result with it.</li>
+</ul>
+
+<h3>How the two cases play out now</h3>
+<ul>
+  <li><strong>Case 1:</strong> D's permit is from generation 0 (CLOSED). The circuit is now in generation 2 (OPEN was 1, HALF_OPEN is 2). D's <code>recordSuccess()</code> is ignored, and only E's trial result can close or re-open the circuit.</li>
+  <li><strong>Case 2:</strong> D's <code>recordFailure()</code> is ignored, the flag stays true, and F gets <code>REJECTED</code>. Only one trial exists at a time.</li>
+</ul>
+
+<h2>HTTP timeouts (implemented)</h2>
+
+<p>Most of the danger came from calls that could hang forever. Connect and read timeouts limit how long a stale call can stay in flight.</p>
+
+<p class="file"><code>src/main/java/org/service/SimplePriceService.java</code></p>
+<pre><code>// Without timeouts a hanging connection blocks the caller forever
+private static final int CONNECT_TIMEOUT_MS = 2000;
+private static final int READ_TIMEOUT_MS = 3000;
+
+protected BigDecimal fetchPrice(String product) throws Exception {
+    URL url = new URL(baseUrl + product + ".json");
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    conn.setRequestMethod("GET");
+    conn.setConnectTimeout(connectTimeoutMs);
+    conn.setReadTimeout(readTimeoutMs);
+
+    try {
+        int status = conn.getResponseCode();
+        ...   // status and price checks, see "Other fixes from the review" below
+    } finally {
+        conn.disconnect();
+    }
+}</code></pre>
+
+<ul>
+  <li>A hanging attempt now fails within about 5 seconds (2 s connect + 3 s read) with <code>SocketTimeoutException</code>.</li>
+  <li>The reader is closed with try-with-resources and the connection is always disconnected, so nothing leaks when a call fails.</li>
+  <li>A package-private constructor takes the base URL and timeouts so tests can use a local server. The cast is now to <code>HttpURLConnection</code> (the real HTTPS URL still works).</li>
+</ul>
+
+<h2>Tests</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Test</th><th>What it proves</th></tr></thead>
+  <tbody>
+    <tr><td><code>shouldIgnoreStaleSuccessDuringTrial</code></td><td>Case 1: a slow call from the CLOSED period can't close the circuit during the trial; only the trial decides</td></tr>
+    <tr><td><code>shouldIgnoreStaleFailureDuringTrial</code></td><td>Case 2: a slow failure can't re-open the circuit or allow a second trial</td></tr>
+    <tr><td><code>shouldIgnoreResultsFromRejectedPermits</code></td><td>A refused caller can't change the state</td></tr>
+    <tr><td><code>shouldCountFailuresFromConcurrentCallsInSameClosedGeneration</code></td><td>Calls running at the same time while CLOSED all count toward the threshold</td></tr>
+    <tr><td><code>shouldResetFailureCountOnSuccessWhenClosed</code></td><td>The threshold counts consecutive failures</td></tr>
+    <tr><td><code>shouldCloseWhenTrialSucceeds</code> / <code>shouldReopenWhenTrialFails</code></td><td>The trial result decides the next state</td></tr>
+    <tr><td><code>shouldFetchPriceFromServer</code></td><td>The fetch-and-parse path works against a local HTTP server</td></tr>
+    <tr><td><code>shouldTimeOutWhenServerIsSlow</code></td><td>The server waits 2 s; a 200 ms read timeout ends the call with <code>SocketTimeoutException</code> in under 1 s</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The tests for the other review fixes are listed in their own section below. All 43 tests pass, and the app still prints the expected totals against the real price API (subtotal 15.02, tax 1.88, total 16.90).</p>
+
+<h2>Explained: <code>permit.generation != generation</code></h2>
+
+<pre><code>private boolean isStale(Permit permit) {
+    return permit.type == Permission.REJECTED || permit.generation != generation;
+}</code></pre>
+
+<h3>What the expression compares</h3>
+
+<p><code>permit.generation != generation</code> compares two numbers:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Expression</th><th>What it is</th><th>Set when</th></tr></thead>
+  <tbody>
+    <tr><td><code>permit.generation</code></td><td>The generation <strong>stamped on the permit</strong></td><td>Once, when the request called <code>acquirePermission()</code>. It's <code>final</code>, so it never changes</td></tr>
+    <tr><td><code>generation</code> (short for <code>this.generation</code>)</td><td>The breaker's <strong>current</strong> generation</td><td>Increased by <code>transitionTo()</code> on every state change</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Put simply, the check asks: <strong>"Has the breaker changed state since this request got its permission?"</strong></p>
+<ul>
+  <li><strong>Equal:</strong> the breaker is in the same state the request was given permission in. The result is current and gets applied.</li>
+  <li><strong>Not equal:</strong> the breaker has changed state at least once while the request was running. The result is <strong>stale</strong>, so <code>isStale()</code> returns <code>true</code> and <code>recordSuccess()</code>/<code>recordFailure()</code> return without doing anything.</li>
+</ul>
+
+<p>The permit is like a ticket dated with the breaker's state when it was issued. A result is only accepted if that state is still the current one.</p>
+
+<h3>Worked example (Case 1)</h3>
+
+<p>Breaker <code>(1, 100)</code>, so one failure opens it:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Step</th><th>Code</th><th><code>generation</code></th><th>Permit gets</th><th>Check result</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>D: <code>acquirePermission()</code> while CLOSED</td><td>0</td><td>D = (ALLOWED, <strong>0</strong>)</td><td></td></tr>
+    <tr><td>2</td><td>A: <code>acquirePermission()</code> while CLOSED</td><td>0</td><td>A = (ALLOWED, <strong>0</strong>)</td><td></td></tr>
+    <tr><td>3</td><td>A: <code>recordFailure(A)</code></td><td>0</td><td></td><td><code>0 != 0</code> is false, so <strong>applied</strong>: CLOSED → OPEN, <code>generation</code> becomes <strong>1</strong></td></tr>
+    <tr><td>4</td><td>100 ms later, E: <code>acquirePermission()</code></td><td>1, then <strong>2</strong></td><td>E = (TRIAL, <strong>2</strong>)</td><td>OPEN → HALF_OPEN happened inside this call</td></tr>
+    <tr><td>5</td><td>D (slow) finishes: <code>recordSuccess(D)</code></td><td>2</td><td></td><td class="wrong"><code>0 != 2</code> is true, so <strong>stale and ignored</strong>. The circuit stays HALF_OPEN</td></tr>
+    <tr><td>6</td><td>E finishes: <code>recordFailure(E)</code></td><td>2</td><td></td><td><code>2 != 2</code> is false, so <strong>applied</strong>: HALF_OPEN → OPEN, <code>generation</code> becomes 3</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>D and E report results only a moment apart, but only E's counts, because only E's permit matches the breaker's current state.</p>
+
+<h3>Why <code>!=</code> and not <code>&lt;</code></h3>
+
+<p>A permit's generation can never be <strong>higher</strong> than the current one, because the counter only goes up. So <code>!=</code> and <code>&lt;</code> give the same answer here. <code>!=</code> states the intent more directly ("same state or not"), and it keeps working if the counter overflows and wraps round to a negative number. <code>&lt;</code> would get that wrong.</p>
+
+<h3>Why requests in the same CLOSED period still count</h3>
+
+<p>Successes and failures that stay below the threshold <strong>don't</strong> call <code>transitionTo()</code>, so they don't change the generation. A and D in steps 1–2 both have generation 0. If A's failure hadn't reached the threshold, D's result would still be applied. That's how failures from requests running at the same time add up to the threshold.</p>
+
+<h3>Java details</h3>
+<ul>
+  <li><strong><code>generation</code> with no prefix</strong> means <code>this.generation</code>, the field of the <code>CircuitBreaker</code> that owns the method. <code>Permit</code> also has a field called <code>generation</code>, but this code runs in <code>CircuitBreaker</code>, so the plain name refers to the breaker's field.</li>
+  <li><strong><code>permit.generation</code> is <code>private</code></strong> in <code>Permit</code>, yet <code>CircuitBreaker</code> can read it. Java allows this because <code>Permit</code> is nested inside <code>CircuitBreaker</code>, so the outer class can see the nested class's private members. Code outside <code>CircuitBreaker</code> can't read or fake a permit's generation, and the <code>Permit</code> constructor is private too, so only the breaker can create permits.</li>
+  <li><strong>Thread safety:</strong> <code>isStale()</code> is only called from <code>recordSuccess()</code> and <code>recordFailure()</code>, which are <code>synchronized</code>. Reading <code>generation</code> and any state change based on it happen under the same lock. That means <code>transitionTo()</code> can't run on another thread in the middle of a check.</li>
+</ul>
+
+<h2>Will the generation keep increasing?</h2>
+
+<p>Yes, it only ever goes up. But it goes up slowly, it can't realistically overflow, and nothing would break even if it did.</p>
+
+<h3>When it increases</h3>
+
+<p><code>generation++</code> lives only in <code>transitionTo()</code>, so it goes up on <strong>state changes, not on requests</strong>:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Event</th><th>Change</th><th>Generation</th></tr></thead>
+  <tbody>
+    <tr><td>Normal requests in CLOSED, whether they succeed or fail below the threshold</td><td>none</td><td>unchanged</td></tr>
+    <tr><td>Threshold reached</td><td>CLOSED → OPEN</td><td>+1</td></tr>
+    <tr><td>Requests while OPEN (rejected)</td><td>none</td><td>unchanged</td></tr>
+    <tr><td>First request after the timeout</td><td>OPEN → HALF_OPEN</td><td>+1</td></tr>
+    <tr><td>Trial succeeds</td><td>HALF_OPEN → CLOSED</td><td>+1</td></tr>
+    <tr><td>Trial fails</td><td>HALF_OPEN → OPEN</td><td>+1</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A healthy service never changes the generation, however many millions of requests it serves. It only moves when the price API is failing.</p>
+
+<h3>How fast it can grow</h3>
+
+<p>Every OPEN period lasts at least <code>retryTimeout</code> (5 s) before moving to HALF_OPEN. So even if the API fails constantly, the fastest pattern is about 2 increments per 5 seconds (OPEN → HALF_OPEN → OPEN → …). At most that's about 3 increments every 5 seconds.</p>
+
+<p><code>generation</code> is a <code>long</code>, so it can reach <code>Long.MAX_VALUE</code> ≈ 9.2 × 10<sup>18</sup>:</p>
+<ul>
+  <li><strong>At the real maximum</strong> (about 0.6 increments per second), reaching that would take <strong>hundreds of billions of years</strong>.</li>
+  <li><strong>Even with a billion state changes per second</strong>, it would take about <strong>292 years</strong>.</li>
+</ul>
+
+<p>The counter is also a single <code>long</code> field, so it uses 8 bytes no matter how high it gets. It starts again from 0 when the breaker is recreated, for example when the app restarts.</p>
+
+<h3>Even an overflow would be harmless</h3>
+
+<p>If it did overflow, Java would wrap it from <code>Long.MAX_VALUE</code> to <code>Long.MIN_VALUE</code> without throwing. The breaker only checks whether two generations are <strong>equal</strong>:</p>
+
+<pre><code>permit.generation != generation</code></pre>
+
+<p>It never checks which one is larger, so wrapping doesn't affect the logic. A stale permit would only be wrongly accepted if a request stayed in flight for exactly 2<sup>64</sup> state changes, which is impossible.</p>
+
+<p><strong>No change is needed.</strong> Even an <code>int</code> (about 2.1 billion) would last over 100 years at the real maximum rate, but <code>long</code> takes the question off the table.</p>
+
+<h2>Other fixes from the review (implemented)</h2>
+
+<p>These fix review issues 3 to 7. Issue 5's timeouts and connection clean-up are covered in the "HTTP timeouts" section above.</p>
+
+<h3>3. Client errors no longer retry or open the circuit</h3>
+
+<p><strong>Before:</strong> an unknown product returned 404, which was retried 3 times and counted as a breaker failure. Enough of them opened the circuit, and then valid products failed too.</p>
+
+<p class="file"><code>src/main/java/org/service/PriceClientException.java</code> (new)</p>
+<pre><code>/**
+ * The price API rejected the request itself (HTTP 4xx, e.g. unknown product).
+ * Retrying won't help and the service isn't failing, so this is not retried
+ * and does not count towards the circuit breaker.
+ */
+public class PriceClientException extends RuntimeException {
+    private final int status;
+    ...
+}</code></pre>
+
+<p class="file"><code>src/main/java/org/service/SimplePriceService.java</code></p>
+<pre><code>// in fetchPrice()
+if (isClientError(status)) {
+    throw new PriceClientException(
+            "Price request rejected for product " + product + ", HTTP status: " + status, status);
+}
+if (status != 200) {
+    throw new RuntimeException("Failed with HTTP status: " + status);
+}
+
+// 408 (timeout) and 429 (rate limited) are 4xx but temporary, so they stay retryable
+private static boolean isClientError(int status) {
+    return status &gt;= 400 &amp;&amp; status &lt; 500 &amp;&amp; status != 408 &amp;&amp; status != 429;
+}
+
+// in getPrice()'s retry loop
+} catch (PriceClientException e) {
+    circuitBreaker.release(permit); // not the service's fault → no retry, no failure
+    throw e;
+} catch (Exception e) {
+    lastFailure = e;
+}</code></pre>
+
+<p class="file"><code>src/main/java/org/designprinciple/CircuitBreaker.java</code></p>
+<pre><code>/**
+ * Give the permit back without recording a success or failure, for calls whose
+ * outcome says nothing about the service's health (e.g. HTTP 4xx).
+ * Frees the HALF_OPEN trial so the next caller can probe; otherwise does nothing.
+ */
+public synchronized void release(Permit permit) {
+    if (isStale(permit)) {
+        return;
+    }
+    if (permit.type == Permission.TRIAL) {
+        halfOpenRequestInProgress = false;
+    }
+}</code></pre>
+
+<ul>
+  <li><strong>Why <code>release()</code> is needed:</strong> if a 4xx happened during the half-open trial and the permit was simply dropped, the trial flag would stay set and the breaker would be stuck in HALF_OPEN for good. That's the same problem the old <code>allowRequest()</code> had.</li>
+  <li><strong>Decision:</strong> a 404 during the trial frees the trial; it doesn't close the circuit. A 404 does show the server is reachable, so treating it as a success would also be reasonable. "Doesn't affect the breaker" was chosen because that's what the review asked for.</li>
+</ul>
+
+<h3>4. A missing price fails straight away</h3>
+
+<p><strong>Before:</strong> if the JSON had no <code>price</code> or the body was empty, a <code>null</code> was cached and stored in <code>CartItem</code>. The <code>NullPointerException</code> only appeared later in <code>getTotalPrice()</code>.</p>
+
+<p class="file"><code>src/main/java/org/service/SimplePriceService.java</code> (in <code>fetchPrice()</code>)</p>
+<pre><code>PriceResponse response;
+try (BufferedReader reader =
+             new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+    response = gson.fromJson(reader, PriceResponse.class);
+}
+
+// Fail here rather than letting a null price surface later in the cart
+if (response == null || response.getPrice() == null) {
+    throw new RuntimeException("Price missing in response for product: " + product);
+}
+if (response.getPrice().signum() &lt; 0) {
+    throw new RuntimeException("Negative price in response for product: " + product);
+}
+return response.getPrice();</code></pre>
+
+<p class="file"><code>src/main/java/org/util/Cart.java</code> (second safeguard, for any <code>PriceProvider</code>)</p>
+<pre><code>BigDecimal price = priceProvider.getPrice(product);
+if (price == null) {
+    throw new IllegalStateException("No price returned for product: " + product);
+}
+lruCache.put(product, price);</code></pre>
+
+<ul>
+  <li><strong>Decision:</strong> a missing or negative price counts as a service failure, so it's retried and counts towards the breaker. If the API keeps returning bad data, retrying won't help, but a 200 response with a broken body could also be a temporary server-side problem.</li>
+</ul>
+
+<h3>5. Product names are checked before they go into the URL</h3>
+
+<p><strong>Before:</strong> <code>product</code> was joined into the URL as-is, so something like <code>"../foo"</code> changed the path.</p>
+
+<p class="file"><code>src/main/java/org/service/SimplePriceService.java</code></p>
+<pre><code>// Product names are used as a URL path segment, so only allow safe characters
+private static final Pattern VALID_PRODUCT = Pattern.compile("[A-Za-z0-9_-]+");
+
+// first thing in getPrice(), before asking the breaker for a permit
+if (product == null || !VALID_PRODUCT.matcher(product).matches()) {
+    throw new IllegalArgumentException("Invalid product name: " + product);
+}</code></pre>
+
+<p>Invalid names such as <code>../foo</code>, <code>corn flakes</code> or <code>cornflakes?x=1</code> fail before any HTTP call, so they never affect the breaker.</p>
+
+<h3>6. Invalid cart input is rejected</h3>
+
+<p><strong>Before:</strong> a zero or negative quantity, or a null or blank product name, was accepted.</p>
+
+<p class="file"><code>src/main/java/org/util/Cart.java</code></p>
+<pre><code>public void addProduct(String product, int quantity) throws Exception {
+    // Validate before calling the price API, so bad input never costs a request
+    if (product == null || product.trim().isEmpty()) {
+        throw new IllegalArgumentException("Product name must not be blank");
+    }
+    if (quantity &lt;= 0) {
+        throw new IllegalArgumentException("Quantity must be positive: " + quantity);
+    }
+    ...
+}</code></pre>
+
+<p class="file"><code>src/main/java/org/model/CartItem.java</code></p>
+<pre><code>public CartItem(String product, int quantity, BigDecimal price) {
+    if (product == null || product.trim().isEmpty()) {
+        throw new IllegalArgumentException("Product name must not be blank");
+    }
+    if (quantity &lt;= 0) {
+        throw new IllegalArgumentException("Quantity must be positive: " + quantity);
+    }
+    if (price == null || price.signum() &lt; 0) {
+        throw new IllegalArgumentException("Price must be zero or more: " + price);
+    }
+    ...
+}
+
+public void addQuantity(int qty) {
+    if (qty &lt;= 0) {
+        throw new IllegalArgumentException("Quantity must be positive: " + qty);
+    }
+    this.quantity = Math.addExact(this.quantity, qty); // throws instead of overflowing
+}</code></pre>
+
+<p>The <code>CartItem</code> fields that never change (<code>product</code>, <code>price</code>) are now <code>final</code>.</p>
+
+<h3>7. Totals round up</h3>
+
+<p><strong>Before:</strong> subtotal, tax and total used <code>RoundingMode.HALF_UP</code>. The brief says <em>"Totals should be rounded up where required"</em>, so they now use <code>RoundingMode.UP</code>.</p>
+
+<p class="file"><code>src/main/java/org/util/Cart.java</code></p>
+<pre><code>// The spec says "Totals should be rounded up where required", so round UP (not HALF_UP)
+public BigDecimal getTax() {
+    return getSubtotal()
+            .multiply(new BigDecimal("0.125"))
+            .setScale(2, RoundingMode.UP);
+}</code></pre>
+
+<p>The spec's sample gives the same answer either way (15.02 × 0.125 = 1.8775 → 1.88). The difference shows with a subtotal of 0.10: the tax is 0.0125, which <code>HALF_UP</code> turned into 0.01 and rounding up turns into 0.02.</p>
+
+<h3>Tests for these fixes</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Test</th><th>What it proves</th></tr></thead>
+  <tbody>
+    <tr><td><code>shouldNotRetryOrTripBreakerOn404</code></td><td>With threshold 1, two 404s make exactly 2 HTTP calls (no retries) and the circuit stays CLOSED</td></tr>
+    <tr><td><code>shouldTreatServerErrorsAndTemporary4xxAsRetryable</code></td><td>500, 503, 408 and 429 are not treated as client errors</td></tr>
+    <tr><td><code>shouldReleaseTrialOnClientError</code></td><td>A 404 during the half-open trial frees the trial, and the next caller can probe and close the circuit</td></tr>
+    <tr><td><code>shouldFreeTrialOnReleaseWithoutChangingState</code> / <code>shouldNotCountReleaseAsFailureWhenClosed</code></td><td><code>release()</code> frees the trial and never counts as a failure</td></tr>
+    <tr><td><code>shouldFailFastWhenPriceIsMissing</code></td><td><code>{}</code>, JSON without <code>price</code>, and an empty body all fail with "Price missing"</td></tr>
+    <tr><td><code>shouldRejectNegativePrice</code></td><td>A negative price from the API is rejected</td></tr>
+    <tr><td><code>shouldRejectInvalidProductNameWithoutCallingApi</code></td><td>Unsafe product names fail without any HTTP call</td></tr>
+    <tr><td><code>shouldRejectInvalidInputWithoutCallingProvider</code></td><td>The cart rejects blank names and quantities ≤ 0 before calling the price provider</td></tr>
+    <tr><td><code>shouldRejectNullPriceFromProvider</code></td><td>A <code>null</code> price from any provider is rejected and not added to the cart</td></tr>
+    <tr><td><code>CartItemTest</code> (3 new tests)</td><td>Invalid constructor arguments, non-positive added quantities and quantity overflow are rejected</td></tr>
+    <tr><td><code>shouldMatchSampleFromSpec</code></td><td>The spec's sample cart gives 15.02 / 1.88 / 16.90</td></tr>
+    <tr><td><code>shouldRoundTaxUp</code> / <code>shouldRoundSubtotalUpWhenPricesHaveMoreThanTwoDecimals</code></td><td>Tax and subtotal round up, not to the nearest value</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Context</h2>
+
+<ul>
+  <li><strong>In the current app this edge case can't happen.</strong> <code>Cart</code> is single-threaded and <code>ShoppingCartApp</code> makes calls one after another, so nothing is in flight when the state changes. The fix matters once the breaker is shared between threads.</li>
+  <li><strong>For comparison:</strong> as far as I know, Resilience4j records late results against the breaker's <strong>current</strong> state rather than the state they started in. Libraries often accept this edge case. If you discuss it in a review or interview, the point to make is that you know it exists, why it happens, and how a generation number closes it.</li>
+</ul>
+
+</main>
+</body>
+</html>

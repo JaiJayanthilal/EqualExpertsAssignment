@@ -1,11 +1,9 @@
 package org.util;
 
-import org.cache.CaffeineCache;
-import org.cache.ConcurrentLRUCache;
+
 import org.cache.LRUCache;
 import org.model.CartItem;
 import org.service.PriceProvider;
-import org.service.SimplePriceService;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -14,14 +12,13 @@ import java.util.Map;
 
 public class Cart {
 
+    private static final BigDecimal TAX_RATE = new BigDecimal("0.125");
+
     private Map<String, CartItem> items = new HashMap<>();
     private final PriceProvider priceProvider;
-    private SimplePriceService simplePriceService = new SimplePriceService();
 
     //private Map<String, BigDecimal> priceCache = new HashMap<>();
     private Map<String, BigDecimal> lruCache = new LRUCache(3); // Fast but not thread safe
-    private final ConcurrentLRUCache concurrentLRUCache = new ConcurrentLRUCache(5); // Manually created cache, Fast and thread safe but error prone
-    private final CaffeineCache caffeineCache = new CaffeineCache(); // Cafffeine Library used, to have a thread safe and concurrent cache, tried and tested in production
 
     public Cart(PriceProvider priceProvider) {
         this.priceProvider = priceProvider;
@@ -29,15 +26,25 @@ public class Cart {
 
     private BigDecimal getPrice(String product) throws Exception {
         if (!lruCache.containsKey(product)) {
-            lruCache.put(product, simplePriceService.getPrice(product));
+            BigDecimal price = priceProvider.getPrice(product);
+            if (price == null) {
+                throw new IllegalStateException("No price returned for product: " + product);
+            }
+            lruCache.put(product, price);
         }
         return lruCache.get(product);
     }
 
     public void addProduct(String product, int quantity) throws Exception {
-        //BigDecimal price = getPrice(product);  // this line calls LRU Cache
-       // BigDecimal price = concurrentLRUCache.getOrLoad(product, priceService); // this line calls concurrentLRUCache
-        BigDecimal price = caffeineCache.getOrLoad(product, priceProvider);  // this line calls caffeine Cache
+        // Validate before calling the price API, so bad input never costs a request
+        if (product == null || product.trim().isEmpty()) {
+            throw new IllegalArgumentException("Product name must not be blank");
+        }
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("Quantity must be positive: " + quantity);
+        }
+
+        BigDecimal price = getPrice(product);  // this line calls LRU Cache
 
         if (items.containsKey(product)) {
             items.get(product).addQuantity(quantity);
@@ -46,23 +53,21 @@ public class Cart {
         }
     }
 
+    // The spec says "Totals should be rounded up where required", so round UP (not HALF_UP)
     public BigDecimal getSubtotal() {
         return items.values().stream()
                 .map(CartItem::getTotalPrice)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(2, RoundingMode.HALF_UP);
+                .setScale(2, RoundingMode.UP);
     }
 
     public BigDecimal getTax() {
-        return getSubtotal()
-                .multiply(new BigDecimal("0.125"))
-                .setScale(2, RoundingMode.HALF_UP);
+        return taxOn(getSubtotal());
     }
 
     public BigDecimal getTotal() {
-        return getSubtotal()
-                .add(getTax())
-                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal subtotal = getSubtotal();
+        return totalOf(subtotal, taxOn(subtotal));
     }
 
     public void printCart() {
@@ -71,8 +76,24 @@ public class Cart {
                     item.getQuantity() + " x " + item.getProduct());
         }
 
-        System.out.println("Subtotal = " + getSubtotal());
-        System.out.println("Tax = " + getTax());
-        System.out.println("Total = " + getTotal());
+        // Calculate the subtotal once and derive tax and total from it
+        BigDecimal subtotal = getSubtotal();
+        BigDecimal tax = taxOn(subtotal);
+
+        System.out.println("Subtotal = " + subtotal);
+        System.out.println("Tax = " + tax);
+        System.out.println("Total = " + totalOf(subtotal, tax));
+    }
+
+    private static BigDecimal taxOn(BigDecimal subtotal) {
+        return subtotal
+                .multiply(TAX_RATE)
+                .setScale(2, RoundingMode.UP);
+    }
+
+    private static BigDecimal totalOf(BigDecimal subtotal, BigDecimal tax) {
+        return subtotal
+                .add(tax)
+                .setScale(2, RoundingMode.UP);
     }
 }
