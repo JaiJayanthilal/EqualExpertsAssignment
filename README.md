@@ -11,6 +11,7 @@ The application supports:
 * Calculating subtotal, tax, and total
 * Handling failures using retry and circuit breaker patterns
 * Optimizing performance using caching strategies
+* test
 
 ---
 
