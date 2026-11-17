@@ -1,44 +1,17 @@
 package org.util;
 
 import org.junit.jupiter.api.Test;
+import org.model.CartItem;
+import org.service.PriceLookupException;
 import org.service.PriceProvider;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class CartTest {
-
-    @Test
-    void shouldAddProductsAndCalculateTotals() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
-
-        when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("2.50"));
-        when(provider.getPrice("weetabix")).thenReturn(new BigDecimal("3.00"));
-
-        Cart cart = new Cart(provider);
-
-        cart.addProduct("cornflakes", 2);
-        cart.addProduct("weetabix", 1);
-
-        assertEquals(new BigDecimal("8.00"), cart.getSubtotal());
-        assertEquals(new BigDecimal("1.00"), cart.getTax());
-        assertEquals(new BigDecimal("9.00"), cart.getTotal());
-    }
-
-    @Test
-    void shouldMergeSameProduct() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
-        when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("2.50"));
-
-        Cart cart = new Cart(provider);
-
-        cart.addProduct("cornflakes", 1);
-        cart.addProduct("cornflakes", 2);
-
-        assertEquals(new BigDecimal("7.50"), cart.getSubtotal());
-    }
 
     @Test
     void shouldMatchSampleFromSpec() throws Exception {
@@ -52,9 +25,40 @@ class CartTest {
         cart.addProduct("cornflakes", 1);
         cart.addProduct("weetabix", 1);
 
+        List<CartItem> items = cart.getItems();
+        assertEquals(2, items.size());
+        assertEquals("cornflakes", items.get(0).getProduct());
+        assertEquals(2, items.get(0).getQuantity());
+        assertEquals("weetabix", items.get(1).getProduct());
+        assertEquals(1, items.get(1).getQuantity());
+
         assertEquals(new BigDecimal("15.02"), cart.getSubtotal());
         assertEquals(new BigDecimal("1.88"), cart.getTax());   // 1.8775 → 1.88
         assertEquals(new BigDecimal("16.90"), cart.getTotal());
+    }
+
+    @Test
+    void shouldLookUpPriceOnlyOnFirstAdd() throws Exception {
+        PriceProvider provider = mock(PriceProvider.class);
+        when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("2.50"));
+
+        Cart cart = new Cart(provider);
+
+        cart.addProduct("cornflakes", 1);
+        cart.addProduct("cornflakes", 2);
+
+        assertEquals(new BigDecimal("7.50"), cart.getSubtotal());
+        verify(provider, times(1)).getPrice("cornflakes");
+    }
+
+    @Test
+    void shouldHaveZeroTotalsWhenEmpty() {
+        Cart cart = new Cart(mock(PriceProvider.class));
+
+        assertTrue(cart.getItems().isEmpty());
+        assertEquals(new BigDecimal("0.00"), cart.getSubtotal());
+        assertEquals(new BigDecimal("0.00"), cart.getTax());
+        assertEquals(new BigDecimal("0.00"), cart.getTotal());
     }
 
     @Test
@@ -82,7 +86,7 @@ class CartTest {
     }
 
     @Test
-    void shouldRejectInvalidInputWithoutCallingProvider() throws Exception {
+    void shouldRejectInvalidInputWithoutCallingProvider() {
         PriceProvider provider = mock(PriceProvider.class);
         Cart cart = new Cart(provider);
 
@@ -93,15 +97,27 @@ class CartTest {
         assertThrows(IllegalArgumentException.class, () -> cart.addProduct("cornflakes", -1));
 
         verifyNoInteractions(provider);
-        assertEquals(new BigDecimal("0.00"), cart.getSubtotal());
+        assertTrue(cart.getItems().isEmpty());
     }
 
     @Test
-    void shouldRejectNullPriceFromProvider() throws Exception {
+    void shouldRejectNullPriceFromProvider() {
         PriceProvider provider = mock(PriceProvider.class); // returns null by default
         Cart cart = new Cart(provider);
 
         assertThrows(IllegalStateException.class, () -> cart.addProduct("cornflakes", 1));
-        assertEquals(new BigDecimal("0.00"), cart.getSubtotal());
+        assertTrue(cart.getItems().isEmpty());
+    }
+
+    @Test
+    void shouldLeaveCartUnchangedWhenPriceLookupFails() throws Exception {
+        PriceProvider provider = mock(PriceProvider.class);
+        when(provider.getPrice("unknown")).thenThrow(new PriceLookupException("Unknown product: unknown"));
+
+        Cart cart = new Cart(provider);
+
+        assertThrows(PriceLookupException.class, () -> cart.addProduct("unknown", 1));
+        assertTrue(cart.getItems().isEmpty());
+        assertEquals(new BigDecimal("0.00"), cart.getTotal());
     }
 }

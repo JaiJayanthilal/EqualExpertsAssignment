@@ -1,228 +1,60 @@
-# 🛒 Shopping Cart Application
+# Shopping Cart
 
-## 📌 Overview
+A shopping cart library for the Equal Experts take-home test. Products are added with a quantity, prices come from the Equal Experts price API, and the cart works out the subtotal, tax (12.5%) and total.
 
-This is a simple Java-based shopping cart application built as part of the Equal Experts coding assignment.
+As the brief asks, this is a library exercised through unit tests, not an application.
 
-The application supports:
+## Requirements
 
-* Adding products to the cart
-* Fetching product prices from an external API
-* Calculating subtotal, tax, and total
-* Handling failures using retry and circuit breaker patterns
-* Optimizing performance using caching strategies
-* test
+- Java 17+
+- Maven 3
 
----
+## Running the tests
 
-## ⚙️ Features
-
-### 🧾 Cart Capabilities
-
-* Add product with quantity
-* Maintain cart state
-* Calculate:
-
-    * **Subtotal**
-    * **Tax (12.5%)**
-    * **Total payable**
-* Rounds values to 2 decimal places
-
----
-
-### 🌐 Price API Integration
-
-* Fetches product prices from:
-
-  ```
-  https://equalexperts.github.io/backend-take-home-test-data/{product}.json
-  ```
-* Supported products:
-
-    * cheerios
-    * cornflakes
-    * frosties
-    * shreddies
-    * weetabix
-
----
-
-## 🧠 Design Approach
-
-### 🔹 Abstraction
-
-A common interface is used:
-
-```java
-PriceProvider e
+```
+mvn test
 ```
 
-This allows switching between different implementations without changing the cart logic.
+The tests don't call the real price API. The cart is tested with a stubbed price provider, and the API client is tested against a local HTTP server.
 
----
+## Usage
 
-## 🔄 Price Service Implementations
+```java
+Cart cart = new Cart(new PriceApiClient());
 
-### 1️⃣ SimplePriceService
+cart.addProduct("cornflakes", 1);
+cart.addProduct("cornflakes", 1);
+cart.addProduct("weetabix", 1);
 
-* Implements **manual retry logic**
-* Implements **custom circuit breaker**
-* Demonstrates:
+cart.getItems();     // 2 x cornflakes, 1 x weetabix
+cart.getSubtotal();  // 15.02
+cart.getTax();       // 1.88
+cart.getTotal();     // 16.90
+```
 
-    * Low-level control over failure handling
-    * Understanding of retry + circuit breaker mechanics
+## Design
 
----
+| Class | Responsibility |
+|---|---|
+| `Cart` | Holds the items and calculates subtotal, tax and total |
+| `CartItem` | One product in the cart: name, quantity and unit price |
+| `PriceProvider` | Interface for looking up a price, so the cart can be tested without the network |
+| `PriceApiClient` | Fetches prices from `https://equalexperts.github.io/backend-take-home-test-data/{product}.json` |
+| `PriceResponse` | The JSON response from the price API |
+| `PriceLookupException` | The API answered, but not with a usable price |
 
-### 2️⃣ ResilientPriceService
+## Assumptions
 
-* Uses Resilience4j
-* Implements:
+- **Totals are rounded up.** The brief says "Totals should be rounded up where required", so subtotal and tax are rounded up to 2 decimal places (`RoundingMode.UP`), not to the nearest value. For example, tax on 0.10 is 0.0125, which becomes 0.02.
+- **The price is fetched on the first add and reused.** Adding more of a product already in the cart increases its quantity without calling the API again, so one product always has one price in the cart.
+- **Quantity must be positive.** Zero or negative quantities, and blank product names, are rejected before any API call.
+- **Product names are restricted to letters, digits, `-` and `_`.** The name becomes part of the request URL, so anything else (for example `../foo`) is rejected rather than sent.
+- **Unknown products fail clearly.** A 404 from the API becomes `PriceLookupException("Unknown product: ...")`, and the cart is left unchanged.
+- **A missing or negative price is an error.** It's reported when the response is read, rather than failing later in a calculation.
 
-    * Circuit Breaker
-    * Retry mechanism
-* Demonstrates:
+## Trade-offs
 
-    * Production-grade resilience
-    * Clean functional composition using Supplier
-
----
-
-### 💡 Note
-
-Both implementations are intentionally kept separate to **demonstrate two approaches**:
-
-* Manual implementation (learning purpose)
-* Library-based implementation (production-ready)
-
----
-
-## 🧠 Caching Strategies
-
-To avoid repeated API calls, multiple caching strategies are implemented:
-
-### 1️⃣ LRUCache
-
-* Uses `LinkedHashMap`
-* Simple, non-thread-safe implementation
-* Demonstrates basic LRU eviction
-
----
-
-### 2️⃣ ConcurrentLRUCache
-
-* Uses:
-
-    * `ConcurrentHashMap`
-    * `ConcurrentLinkedDeque`
-    * `ReentrantLock`
-* Thread-safe implementation
-* Demonstrates:
-
-    * Custom concurrency handling
-    * Manual eviction logic
-
----
-
-### 3️⃣ CaffeineCache
-
-* Uses Caffeine
-* Production-grade caching
-* Features:
-
-    * High concurrency
-    * Automatic eviction
-    * Atomic loading
-
----
-
-### 💡 Note
-
-All three cache implementations are intentionally included to:
-
-* Compare approaches
-* Demonstrate trade-offs between simplicity and performance
-
----
-
-## 🔁 Resilience Design
-
-### Manual Approach (SimplePriceService)
-
-* Custom circuit breaker implementation
-* Retry loop with delay
-
-### Library Approach (ResilientPriceService)
-
-* Uses Resilience4j:
-
-    * CircuitBreaker
-    * Retry
-* Configurable:
-
-    * Failure thresholds
-    * Retry attempts
-    * HALF_OPEN behavior
-
----
-
-## 🧪 Testing
-
-* Unit tests cover:
-
-    * Cart calculations
-    * Price service logic
-    * Cache behavior
-
----
-
-## ⚖️ Design Trade-offs
-
-| Area         | Approach          | Reason                                        |
-| ------------ | ----------------- | --------------------------------------------- |
-| Resilience   | Manual + Library  | Demonstrate understanding vs production usage |
-| Caching      | 3 implementations | Compare strategies                            |
-| Architecture | Interface-based   | Enables flexibility and testing               |
-| Frameworks   | None              | Requirement constraint                        |
-
----
-
-## 🚀 How to Run
-
-1. Clone repository
-2. Build using Maven:
-
-   ```
-   mvn clean install
-   ```
-3. Run main class:
-
-   ```
-   ShoppingCartApp
-   ```
-
----
-
-## 🎯 Key Learnings
-
-* Implementation of **LRU cache**
-* Handling concurrency in caching
-* Understanding **Circuit Breaker pattern**
-* Using **Resilience4j** for production-ready systems
-* Applying **clean architecture principles**
-
----
-
-## 📌 Final Note
-
-This project intentionally includes multiple implementations for:
-
-* Learning
-* Comparison
-* Demonstration during technical discussions
-
-In a real-world production system:
-
-* A single standardized approach (e.g., Caffeine + Resilience4j) would be preferred
-
----
+- **No retries, caching or circuit breaker**, to keep with the brief. In production I'd add them with Resilience4j and Caffeine rather than writing them by hand.
+- **HTTP timeouts are set** (2 s connect, 3 s read), so a slow API can't block the caller indefinitely.
+- **`HttpURLConnection` and Gson** are used instead of a larger HTTP client or framework, to keep dependencies small.
+- **The cart is not thread-safe.** A cart belongs to one shopper, so no locking was added.
