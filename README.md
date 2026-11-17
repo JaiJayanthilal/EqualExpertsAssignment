@@ -54,7 +54,7 @@ The application supports:
 A common interface is used:
 
 ```java
-PriceProvider
+PriceProvider e
 ```
 
 This allows switching between different implementations without changing the cart logic.
