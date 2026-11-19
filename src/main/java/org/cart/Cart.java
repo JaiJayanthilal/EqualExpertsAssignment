@@ -19,6 +19,9 @@ public class Cart {
     private final Map<String, CartItem> items = new LinkedHashMap<>();
     private final PriceProviderService priceProvider;
 
+    // Kept up to date on every add, so totals don't re-sum the items each time
+    private BigDecimal unroundedSubtotal = BigDecimal.ZERO;
+
     public Cart(PriceProviderService priceProvider) {
         this.priceProvider = Objects.requireNonNull(priceProvider, "priceProvider");
     }
@@ -36,6 +39,7 @@ public class Cart {
         CartItem existing = items.get(product);
         if (existing != null) {
             existing.addQuantity(quantity);
+            addToSubtotal(existing.getPrice(), quantity);
             return;
         }
 
@@ -44,6 +48,11 @@ public class Cart {
             throw new IllegalStateException("No price returned for product: " + product);
         }
         items.put(product, new CartItem(product, quantity, price));
+        addToSubtotal(price, quantity);
+    }
+
+    private void addToSubtotal(BigDecimal price, int quantity) {
+        unroundedSubtotal = unroundedSubtotal.add(price.multiply(BigDecimal.valueOf(quantity)));
     }
 
     public List<CartItem> getItems() {
@@ -52,10 +61,7 @@ public class Cart {
 
     // The spec says "Totals should be rounded up where required", so round UP (not HALF_UP)
     public BigDecimal getSubtotal() {
-        return items.values().stream()
-                .map(CartItem::getTotalPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(2, RoundingMode.UP);
+        return unroundedSubtotal.setScale(2, RoundingMode.UP);
     }
 
     public BigDecimal getTax() {

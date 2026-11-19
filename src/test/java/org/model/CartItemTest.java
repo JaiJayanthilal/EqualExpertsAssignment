@@ -12,6 +12,7 @@ class CartItemTest {
     void shouldCalculateTotalPrice() {
         CartItem item = new CartItem("apple", 2, BigDecimal.TEN);
 
+        assertEquals(BigDecimal.TEN, item.getPrice());
         assertEquals(new BigDecimal("20"), item.getTotalPrice());
     }
 

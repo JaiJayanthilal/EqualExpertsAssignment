@@ -52,6 +52,19 @@ class CartTest {
     }
 
     @Test
+    void shouldLeaveSubtotalUnchangedWhenQuantityOverflows() throws Exception {
+        PriceProviderService provider = mock(PriceProviderService.class);
+        when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("1.00"));
+
+        Cart cart = new Cart(provider);
+        cart.addProduct("cornflakes", Integer.MAX_VALUE);
+        BigDecimal before = cart.getSubtotal();
+
+        assertThrows(ArithmeticException.class, () -> cart.addProduct("cornflakes", 1));
+        assertEquals(before, cart.getSubtotal());
+    }
+
+    @Test
     void shouldHaveZeroTotalsWhenEmpty() {
         Cart cart = new Cart(mock(PriceProviderService.class));
 
