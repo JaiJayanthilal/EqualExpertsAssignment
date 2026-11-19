@@ -1,5 +1,5 @@
 import org.service.PriceApiClientService;
-import org.util.Cart;
+import org.cart.Cart;
 
 public class ShoppingCartApplication {
     public static void main(String[] args) throws Exception {
