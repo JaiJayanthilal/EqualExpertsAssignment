@@ -30,10 +30,6 @@ public class CartItem {
         return quantity;
     }
 
-    public BigDecimal getPrice() {
-        return price;
-    }
-
     public void addQuantity(int qty) {
         if (qty <= 0) {
             throw new IllegalArgumentException("Quantity must be positive: " + qty);
