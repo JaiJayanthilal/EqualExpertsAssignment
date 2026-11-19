@@ -1,7 +1,7 @@
 package org.util;
 
 import org.model.CartItem;
-import org.service.PriceProvider;
+import org.service.PriceProviderService;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -17,9 +17,9 @@ public class Cart {
 
     // LinkedHashMap keeps items in the order they were first added
     private final Map<String, CartItem> items = new LinkedHashMap<>();
-    private final PriceProvider priceProvider;
+    private final PriceProviderService priceProvider;
 
-    public Cart(PriceProvider priceProvider) {
+    public Cart(PriceProviderService priceProvider) {
         this.priceProvider = Objects.requireNonNull(priceProvider, "priceProvider");
     }
 

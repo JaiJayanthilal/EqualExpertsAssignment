@@ -1,6 +1,7 @@
 package org.service;
 
 import com.sun.net.httpserver.HttpServer;
+import org.exception.PriceLookupException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -18,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Tests the client against a local HTTP server, so no real network calls are made.
  */
-class PriceApiClientTest {
+class PriceApiClientServiceTest {
 
     private HttpServer server;
     private final List<String> requestedPaths = new ArrayList<>();
@@ -32,7 +33,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldReturnPriceFromApi() throws Exception {
-        PriceApiClient client = clientFor(200, "{\"title\": \"Corn Flakes\", \"price\": 2.52}");
+        PriceApiClientService client = clientFor(200, "{\"title\": \"Corn Flakes\", \"price\": 2.52}");
 
         assertEquals(new BigDecimal("2.52"), client.getPrice("cornflakes"));
         assertEquals(List.of("/cornflakes.json"), requestedPaths);
@@ -40,7 +41,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldFailWithClearMessageForUnknownProduct() throws Exception {
-        PriceApiClient client = clientFor(404, "Not Found");
+        PriceApiClientService client = clientFor(404, "Not Found");
 
         PriceLookupException ex = assertThrows(PriceLookupException.class,
                 () -> client.getPrice("unknown"));
@@ -50,7 +51,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldFailOnErrorStatus() throws Exception {
-        PriceApiClient client = clientFor(500, "Server Error");
+        PriceApiClientService client = clientFor(500, "Server Error");
 
         PriceLookupException ex = assertThrows(PriceLookupException.class,
                 () -> client.getPrice("cornflakes"));
@@ -61,7 +62,7 @@ class PriceApiClientTest {
     @Test
     void shouldFailWhenPriceIsMissing() throws Exception {
         for (String body : new String[]{"{}", "{\"title\": \"Corn Flakes\"}", ""}) {
-            PriceApiClient client = clientFor(200, body);
+            PriceApiClientService client = clientFor(200, body);
 
             PriceLookupException ex = assertThrows(PriceLookupException.class,
                     () -> client.getPrice("cornflakes"), "body: " + body);
@@ -73,7 +74,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldFailOnNegativePrice() throws Exception {
-        PriceApiClient client = clientFor(200, "{\"price\": -1.00}");
+        PriceApiClientService client = clientFor(200, "{\"price\": -1.00}");
 
         PriceLookupException ex = assertThrows(PriceLookupException.class,
                 () -> client.getPrice("cornflakes"));
@@ -83,7 +84,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldTimeOutWhenServerIsSlow() throws Exception {
-        PriceApiClient client = clientFor(200, "{\"price\": 2.52}", 2000, 200); // server answers after 2 sec
+        PriceApiClientService client = clientFor(200, "{\"price\": 2.52}", 2000, 200); // server answers after 2 sec
 
         // read timeout is 200 ms, so the call gives up long before the server answers
         assertTimeoutPreemptively(Duration.ofSeconds(1), () ->
@@ -92,7 +93,7 @@ class PriceApiClientTest {
 
     @Test
     void shouldRejectUnsafeProductNamesWithoutCallingApi() throws Exception {
-        PriceApiClient client = clientFor(200, "{\"price\": 2.52}");
+        PriceApiClientService client = clientFor(200, "{\"price\": 2.52}");
 
         for (String product : new String[]{null, "", "../foo", "corn flakes", "cornflakes?x=1"}) {
             assertThrows(IllegalArgumentException.class, () -> client.getPrice(product));
@@ -101,11 +102,11 @@ class PriceApiClientTest {
         assertTrue(requestedPaths.isEmpty());
     }
 
-    private PriceApiClient clientFor(int status, String body) throws IOException {
+    private PriceApiClientService clientFor(int status, String body) throws IOException {
         return clientFor(status, body, 0, 1000);
     }
 
-    private PriceApiClient clientFor(int status, String body, long delayMs, int readTimeoutMs) throws IOException {
+    private PriceApiClientService clientFor(int status, String body, long delayMs, int readTimeoutMs) throws IOException {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
             requestedPaths.add(exchange.getRequestURI().getPath());
@@ -122,6 +123,6 @@ class PriceApiClientTest {
         server.start();
 
         String baseUrl = "http://localhost:" + server.getAddress().getPort() + "/";
-        return new PriceApiClient(baseUrl, 1000, readTimeoutMs);
+        return new PriceApiClientService(baseUrl, 1000, readTimeoutMs);
     }
 }

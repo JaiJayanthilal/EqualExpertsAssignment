@@ -20,7 +20,7 @@ The tests don't call the real price API. The cart is tested with a stubbed price
 ## Usage
 
 ```java
-Cart cart = new Cart(new PriceApiClient());
+Cart cart = new Cart(new PriceApiClientService());
 
 cart.addProduct("cornflakes", 1);
 cart.addProduct("cornflakes", 1);
@@ -38,10 +38,10 @@ cart.getTotal();     // 16.90
 |---|---|
 | `Cart` | Holds the items and calculates subtotal, tax and total |
 | `CartItem` | One product in the cart: name, quantity and unit price |
-| `PriceProvider` | Interface for looking up a price, so the cart can be tested without the network |
-| `PriceApiClient` | Fetches prices from `https://equalexperts.github.io/backend-take-home-test-data/{product}.json` |
+| `PriceProviderService` | Interface for looking up a price, so the cart can be tested without the network |
+| `PriceApiClientService` | Fetches prices from `https://equalexperts.github.io/backend-take-home-test-data/{product}.json` |
 | `PriceResponse` | The JSON response from the price API |
-| `PriceLookupException` | The API answered, but not with a usable price |
+| `PriceLookupException` (`org.exception`) | The API answered, but not with a usable price |
 
 ## Assumptions
 

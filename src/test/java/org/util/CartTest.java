@@ -1,9 +1,9 @@
 package org.util;
 
 import org.junit.jupiter.api.Test;
+import org.exception.PriceLookupException;
 import org.model.CartItem;
-import org.service.PriceLookupException;
-import org.service.PriceProvider;
+import org.service.PriceProviderService;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -15,7 +15,7 @@ class CartTest {
 
     @Test
     void shouldMatchSampleFromSpec() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("2.52"));
         when(provider.getPrice("weetabix")).thenReturn(new BigDecimal("9.98"));
 
@@ -39,7 +39,7 @@ class CartTest {
 
     @Test
     void shouldLookUpPriceOnlyOnFirstAdd() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("2.50"));
 
         Cart cart = new Cart(provider);
@@ -53,7 +53,7 @@ class CartTest {
 
     @Test
     void shouldHaveZeroTotalsWhenEmpty() {
-        Cart cart = new Cart(mock(PriceProvider.class));
+        Cart cart = new Cart(mock(PriceProviderService.class));
 
         assertTrue(cart.getItems().isEmpty());
         assertEquals(new BigDecimal("0.00"), cart.getSubtotal());
@@ -63,7 +63,7 @@ class CartTest {
 
     @Test
     void shouldRoundTaxUp() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("0.10"));
 
         Cart cart = new Cart(provider);
@@ -76,7 +76,7 @@ class CartTest {
 
     @Test
     void shouldRoundSubtotalUpWhenPricesHaveMoreThanTwoDecimals() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         when(provider.getPrice("cornflakes")).thenReturn(new BigDecimal("1.001"));
 
         Cart cart = new Cart(provider);
@@ -87,7 +87,7 @@ class CartTest {
 
     @Test
     void shouldRejectInvalidInputWithoutCallingProvider() {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         Cart cart = new Cart(provider);
 
         assertThrows(IllegalArgumentException.class, () -> cart.addProduct(null, 1));
@@ -102,7 +102,7 @@ class CartTest {
 
     @Test
     void shouldRejectNullPriceFromProvider() {
-        PriceProvider provider = mock(PriceProvider.class); // returns null by default
+        PriceProviderService provider = mock(PriceProviderService.class); // returns null by default
         Cart cart = new Cart(provider);
 
         assertThrows(IllegalStateException.class, () -> cart.addProduct("cornflakes", 1));
@@ -111,7 +111,7 @@ class CartTest {
 
     @Test
     void shouldLeaveCartUnchangedWhenPriceLookupFails() throws Exception {
-        PriceProvider provider = mock(PriceProvider.class);
+        PriceProviderService provider = mock(PriceProviderService.class);
         when(provider.getPrice("unknown")).thenThrow(new PriceLookupException("Unknown product: unknown"));
 
         Cart cart = new Cart(provider);

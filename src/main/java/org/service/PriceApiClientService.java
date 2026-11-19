@@ -1,6 +1,7 @@
 package org.service;
 
 import com.google.gson.Gson;
+import org.exception.PriceLookupException;
 import org.model.PriceResponse;
 
 import java.io.BufferedReader;
@@ -15,7 +16,7 @@ import java.util.regex.Pattern;
 /**
  * Fetches product prices from the Equal Experts price API.
  */
-public class PriceApiClient implements PriceProvider {
+public class PriceApiClientService implements PriceProviderService {
 
     private static final String BASE_URL =
             "https://equalexperts.github.io/backend-take-home-test-data/";
@@ -33,11 +34,11 @@ public class PriceApiClient implements PriceProvider {
     private final int connectTimeoutMs;
     private final int readTimeoutMs;
 
-    public PriceApiClient() {
+    public PriceApiClientService() {
         this(BASE_URL, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
     }
 
-    PriceApiClient(String baseUrl, int connectTimeoutMs, int readTimeoutMs) {
+    PriceApiClientService(String baseUrl, int connectTimeoutMs, int readTimeoutMs) {
         this.baseUrl = baseUrl;
         this.connectTimeoutMs = connectTimeoutMs;
         this.readTimeoutMs = readTimeoutMs;

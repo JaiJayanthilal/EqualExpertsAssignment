@@ -1,4 +1,4 @@
-package org.service;
+package org.exception;
 
 /**
  * The price API answered, but not with a usable price
