@@ -1,4 +1,4 @@
-package org.util;
+package org.cart;
 
 import org.junit.jupiter.api.Test;
 import org.exception.PriceLookupException;
